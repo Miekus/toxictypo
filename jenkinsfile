@@ -1,0 +1,127 @@
+pipeline{
+    agent any
+        options {
+        gitLabConnection("jenkins") 
+    }
+    stages {
+
+        stage ("SetVariables"){
+            steps{
+                script
+                {   //seting it everytime bcs they are going back to java 11 every time 
+                    env.JAVA_HOME="/usr/lib/jvm/java-8-openjdk-amd64"
+                    env.PATH="${env.JAVA_HOME}/bin:${env.PATH}"
+                }
+            }
+        }
+        stage ("MavenBuild"){
+            steps{
+                script{
+                    sh 'echo MAVEN BUILD STAGE'
+                    configFileProvider([configFile(fileId: 'maven-user-stg', variable: 'MAVEN_SETTINGS_XML')]) {
+                    sh 'mvn --settings $MAVEN_SETTINGS_XML compile' 
+                    } 
+                }
+            }
+        }
+        stage ("MavenTests"){
+            steps{
+                script{
+                    sh 'echo MAVEN TEST STAGE'
+                    configFileProvider([configFile(fileId: 'maven-user-stg', variable: 'MAVEN_SETTINGS_XML')]) {
+                    sh 'mvn --settings $MAVEN_SETTINGS_XML test' 
+                    } 
+                }
+            }
+        }
+        stage ("MavenPackage"){
+            steps{
+                script{
+                    sh 'echo MAVEN PACKAGE STAGE'
+                    configFileProvider([configFile(fileId: 'maven-user-stg', variable: 'MAVEN_SETTINGS_XML')]) {
+                    sh 'mvn --settings $MAVEN_SETTINGS_XML package' 
+                    } 
+                    }
+                }
+        }
+        stage ("MavenVerify"){
+            steps{
+                script{
+                    sh 'echo MAVEN VERIFY STAGE'
+                    configFileProvider([configFile(fileId: 'maven-user-stg', variable: 'MAVEN_SETTINGS_XML')]) {
+                    sh 'mvn --settings $MAVEN_SETTINGS_XML verify' 
+                    } 
+                    }
+                }
+        }
+        stage ("Building Test enviroment"){
+            steps{
+                script
+                { 
+                    sh """
+                        echo 'DOCKER BUILD BUILD STAGE'
+                        ./build-docker-imgs.sh
+                    """
+                    sh """
+                        echo 'DOCKER RUN APP BUILD STAGE'
+                        docker run -d --name=toxiclb -p 9000:8080 --network=toxic-net mateusz_miszka_ecr_toxiclb:1.0
+                    """ 
+                }
+            }
+        }
+        stage ("Sanity test"){
+            steps{
+                script
+                {
+                    sh """
+                        echo 'SANITY TEST STAGE'
+                        docker run -d --name=toxiclbtestsanity --network=toxic-net toxiclbtest "3.124.238.87:9000" "sanity" "5"
+                        sleep 10
+                        if [ -z "\$(docker logs toxiclbtestsanity | grep '7 tests performed')" ];then echo 'test failed'; exit 1;fi
+                        docker stop toxiclbtestsanity
+                        docker rm toxiclbtestsanity
+                    """ 
+                }
+            }
+        }
+        stage ("E2E test"){
+            steps{
+                script
+                {
+                    sh """
+                        echo 'E2E TEST STAGE'
+                        docker run -d --name=toxiclbteste2e --network=toxic-net toxiclbtest "3.124.238.87:9000" "e2e" "0"
+                        sleep 10
+                        if [ -z "\$(docker logs toxiclbteste2e | grep '399 tests performed')" ];then echo 'test failed'; exit 1;fi
+                        docker stop toxiclbteste2e
+                        docker rm toxiclbteste2e
+                    """ 
+                }
+            }
+        }
+        stage ("Release")
+        {
+            when { branch "master" }
+            steps
+            {
+                sh "./docker-image-release.sh 1.0"
+                sh "git clean -n -d"
+                sh "git clean --force -n -d"
+                sh "./init.sh"
+            }
+        }
+    }
+    post {
+        always {
+            script
+            {
+                sh """
+                    echo 'DOCKER REMOVE STAGE'
+                    docker stop toxiclb
+                    docker rm toxiclb
+                """ 
+                // dodac kasowanie obrazow po ich uzyciu zeby nie zabieraly miejsca na dysku
+            }
+        }
+    }
+}
